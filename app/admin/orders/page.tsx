@@ -1,7 +1,17 @@
+
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../../../lib/supabase";
+
+const STATUSES = [
+  "Preparing",
+  "Ready",
+  "Picked Up",
+  "On the Way",
+  "Delivered",
+  "Cancelled",
+];
 
 type Order = {
   id: string;
@@ -19,7 +29,7 @@ type Order = {
 };
 
 type OrderItem = {
-  id: string;
+  id: string | number;
   order_id: string;
   product_id: number | null;
   product_name: string;
@@ -28,12 +38,19 @@ type OrderItem = {
   total: number;
 };
 
+type Customer = {
+  name: string;
+  phone: string;
+  orders: number;
+  total: number;
+};
 
 export default function AdminOrdersPage() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [orderItems, setOrderItems] = useState<OrderItem[]>([]);
 
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [updating, setUpdating] = useState<string | null>(null);
 
   const [isAdmin, setIsAdmin] = useState(false);
@@ -45,26 +62,7 @@ export default function AdminOrdersPage() {
 
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("All");
-
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
-
-  const pendingCount = orders.filter(
-    (order) => !order.status || order.status === "Preparing"
-  ).length;
-  
-  const activeCount = orders.filter((order) =>
-    ["Ready", "Picked Up", "On the Way"].includes(
-      order.status || ""
-    )
-  ).length;
-  
-  const deliveredCount = orders.filter(
-    (order) => order.status === "Delivered"
-  ).length;
-  
-  const cancelledCount = orders.filter(
-    (order) => order.status === "Cancelled"
-  ).length;
 
   useEffect(() => {
     checkAdmin();
@@ -81,7 +79,6 @@ export default function AdminOrdersPage() {
 
       if (userError || !user) {
         setAccessDenied(true);
-        setLoading(false);
         return;
       }
 
@@ -92,13 +89,12 @@ export default function AdminOrdersPage() {
         .maybeSingle();
 
       if (adminError || !admin) {
+        console.error("Admin verification error:", adminError);
         setAccessDenied(true);
-        setLoading(false);
         return;
       }
 
       setIsAdmin(true);
-
       await loadOrders();
     } catch (error) {
       console.error("Admin check error:", error);
@@ -109,38 +105,48 @@ export default function AdminOrdersPage() {
   }
 
   async function loadOrders() {
-    const { data: ordersData, error: ordersError } = await supabase
-      .from("orders")
-      .select("*")
-      .order("created_at", { ascending: false });
+    try {
+      setRefreshing(true);
 
-    if (ordersError) {
-      console.error("Orders loading error:", ordersError);
-      return;
+      const { data: ordersData, error: ordersError } = await supabase
+        .from("orders")
+        .select("*")
+        .order("created_at", { ascending: false });
+
+      if (ordersError) {
+        console.error("Orders loading error:", ordersError);
+        alert(`Could not load orders: ${ordersError.message}`);
+        return;
+      }
+
+      const { data: itemsData, error: itemsError } = await supabase
+        .from("order_items")
+        .select("*")
+        .order("id", { ascending: true });
+
+      if (itemsError) {
+        console.error("Order items loading error:", itemsError);
+      }
+
+      setOrders((ordersData || []) as Order[]);
+      setOrderItems((itemsData || []) as OrderItem[]);
+    } catch (error) {
+      console.error("Dashboard loading error:", error);
+    } finally {
+      setRefreshing(false);
     }
-
-    const { data: itemsData, error: itemsError } = await supabase
-      .from("order_items")
-      .select("*")
-      .order("id", { ascending: true });
-
-    if (itemsError) {
-      console.error("Order items loading error:", itemsError);
-    }
-
-    setOrders((ordersData || []) as Order[]);
-    setOrderItems((itemsData || []) as OrderItem[]);
   }
 
-  async function updateOrderStatus(orderId: string, newStatus: string) {
+  async function updateOrderStatus(
+    orderId: string,
+    newStatus: string
+  ) {
     try {
       setUpdating(orderId);
 
       const { error } = await supabase
         .from("orders")
-        .update({
-          status: newStatus,
-        })
+        .update({ status: newStatus })
         .eq("id", orderId);
 
       if (error) {
@@ -152,20 +158,19 @@ export default function AdminOrdersPage() {
       setOrders((current) =>
         current.map((order) =>
           order.id === orderId
-            ? {
-                ...order,
-                status: newStatus,
-              }
+            ? { ...order, status: newStatus }
             : order
         )
       );
 
-      if (selectedOrder?.id === orderId) {
-        setSelectedOrder({
-          ...selectedOrder,
-          status: newStatus,
-        });
-      }
+      setSelectedOrder((current) =>
+        current?.id === orderId
+          ? { ...current, status: newStatus }
+          : current
+      );
+    } catch (error) {
+      console.error("Status update failed:", error);
+      alert("Something went wrong while updating the order.");
     } finally {
       setUpdating(null);
     }
@@ -173,10 +178,7 @@ export default function AdminOrdersPage() {
 
   function getStatusClass(status: string | null) {
     return (
-      status
-        ?.toLowerCase()
-        .replace(/\s+/g, "-")
-        .replace(/_/g, "-") || "pending"
+      status?.toLowerCase().replace(/\s+/g, "-") || "preparing"
     );
   }
 
@@ -189,7 +191,10 @@ export default function AdminOrdersPage() {
   }
 
   function formatDate(date: string) {
-    return new Date(date).toLocaleString();
+    return new Date(date).toLocaleString("en-KE", {
+      dateStyle: "medium",
+      timeStyle: "short",
+    });
   }
 
   function formatMoney(value: number | null | undefined) {
@@ -199,30 +204,12 @@ export default function AdminOrdersPage() {
     })}`;
   }
 
-  const filteredOrders = useMemo(() => {
-    return orders.filter((order) => {
-      const searchText = search.toLowerCase().trim();
-
-      const matchesSearch =
-        !searchText ||
-        order.order_number?.toLowerCase().includes(searchText) ||
-        order.customer_name?.toLowerCase().includes(searchText) ||
-        order.phone?.toLowerCase().includes(searchText) ||
-        order.delivery_location?.toLowerCase().includes(searchText);
-
-      const matchesStatus =
-        statusFilter === "All" || order.status === statusFilter;
-
-      return matchesSearch && matchesStatus;
-    });
-  }, [orders, search, statusFilter]);
-
   const pendingCount = orders.filter(
-    (order) => order.status === "Pending"
+    (order) => !order.status || order.status === "Preparing"
   ).length;
 
   const activeCount = orders.filter((order) =>
-    ["Confirmed", "Processing", "Out for Delivery"].includes(
+    ["Ready", "Picked Up", "On the Way"].includes(
       order.status || ""
     )
   ).length;
@@ -237,18 +224,32 @@ export default function AdminOrdersPage() {
 
   const totalRevenue = orders
     .filter((order) => order.status !== "Cancelled")
-    .reduce((sum, order) => sum + Number(order.total || 0), 0);
+    .reduce(
+      (sum, order) => sum + Number(order.total || 0),
+      0
+    );
+
+  const filteredOrders = useMemo(() => {
+    return orders.filter((order) => {
+      const searchText = search.toLowerCase().trim();
+
+      const matchesSearch =
+        !searchText ||
+        order.order_number?.toLowerCase().includes(searchText) ||
+        order.customer_name?.toLowerCase().includes(searchText) ||
+        order.phone?.toLowerCase().includes(searchText) ||
+        order.delivery_location?.toLowerCase().includes(searchText);
+
+      const matchesStatus =
+        statusFilter === "All" ||
+        (order.status || "Preparing") === statusFilter;
+
+      return matchesSearch && matchesStatus;
+    });
+  }, [orders, search, statusFilter]);
 
   const customers = useMemo(() => {
-    const map = new Map<
-      string,
-      {
-        name: string;
-        phone: string;
-        orders: number;
-        total: number;
-      }
-    >();
+    const map = new Map<string, Customer>();
 
     orders.forEach((order) => {
       const key = order.phone || order.customer_name;
@@ -277,7 +278,9 @@ export default function AdminOrdersPage() {
   }, [orders]);
 
   const selectedItems = selectedOrder
-    ? orderItems.filter((item) => item.order_id === selectedOrder.id)
+    ? orderItems.filter(
+        (item) => item.order_id === selectedOrder.id
+      )
     : [];
 
   if (loading) {
@@ -313,13 +316,11 @@ export default function AdminOrdersPage() {
   return (
     <main className="admin-page">
       <header className="admin-header">
-        <div>
-          <div className="admin-brand">
-            <span className="admin-logo">LF</span>
-            <div>
-              <h1>LimaFika Admin</h1>
-              <p>Order Management Dashboard</p>
-            </div>
+        <div className="admin-brand">
+          <span className="admin-logo">LF</span>
+          <div>
+            <h1>LimaFika Admin</h1>
+            <p>Order Management Dashboard</p>
           </div>
         </div>
 
@@ -327,8 +328,9 @@ export default function AdminOrdersPage() {
           <button
             className="admin-refresh"
             onClick={loadOrders}
+            disabled={refreshing}
           >
-            ↻ Refresh
+            {refreshing ? "Refreshing..." : "↻ Refresh"}
           </button>
 
           <a href="/products" className="admin-store-link">
@@ -384,16 +386,14 @@ export default function AdminOrdersPage() {
           className={activeTab === "orders" ? "active" : ""}
           onClick={() => setActiveTab("orders")}
         >
-          📦 Orders
-          <span>{orders.length}</span>
+          📦 Orders <span>{orders.length}</span>
         </button>
 
         <button
           className={activeTab === "customers" ? "active" : ""}
           onClick={() => setActiveTab("customers")}
         >
-          👥 Customers
-          <span>{customers.length}</span>
+          👥 Customers <span>{customers.length}</span>
         </button>
 
         <button
@@ -490,9 +490,7 @@ export default function AdminOrdersPage() {
                         {order.delivery_location ? (
                           <a
                             className="map-link"
-                            href={getMapUrl(
-                              order.delivery_location
-                            )}
+                            href={getMapUrl(order.delivery_location)}
                             target="_blank"
                             rel="noopener noreferrer"
                           >
@@ -503,14 +501,10 @@ export default function AdminOrdersPage() {
                         )}
                       </td>
 
-                      <td>
-                        {order.payment_method || "—"}
-                      </td>
+                      <td>{order.payment_method || "—"}</td>
 
                       <td>
-                        <strong>
-                          {formatMoney(order.total)}
-                        </strong>
+                        <strong>{formatMoney(order.total)}</strong>
                       </td>
 
                       <td>
@@ -519,7 +513,7 @@ export default function AdminOrdersPage() {
                             order.status
                           )}`}
                         >
-                          {order.status || "Pending"}
+                          {order.status || "Preparing"}
                         </span>
                       </td>
 
@@ -533,15 +527,14 @@ export default function AdminOrdersPage() {
                         <div className="manage-buttons">
                           <button
                             className="view-button"
-                            onClick={() =>
-                              setSelectedOrder(order)
-                            }
+                            onClick={() => setSelectedOrder(order)}
                           >
                             View
                           </button>
 
                           <select
-value={order.status || "Preparing"}														                            disabled={updating === order.id}
+                            value={order.status || "Preparing"}
+                            disabled={updating === order.id}
                             onChange={(e) =>
                               updateOrderStatus(
                                 order.id,
@@ -551,10 +544,7 @@ value={order.status || "Preparing"}														                            dis
                             className="status-select"
                           >
                             {STATUSES.map((status) => (
-                              <option
-                                key={status}
-                                value={status}
-                              >
+                              <option key={status} value={status}>
                                 {status}
                               </option>
                             ))}
@@ -592,36 +582,40 @@ value={order.status || "Preparing"}														                            dis
               </thead>
 
               <tbody>
-                {customers.map((customer) => (
-                  <tr key={customer.phone}>
-                    <td>
-                      <strong>{customer.name}</strong>
-                    </td>
-
-                    <td>{customer.phone}</td>
-
-                    <td>
-                      <span className="customer-orders-count">
-                        {customer.orders}
-                      </span>
-                    </td>
-
-                    <td>
-                      <strong>
-                        {formatMoney(customer.total)}
-                      </strong>
-                    </td>
-
-                    <td>
-                      <a
-                        href={`tel:${customer.phone}`}
-                        className="call-button"
-                      >
-                        📞 Call
-                      </a>
-                    </td>
+                {customers.length === 0 ? (
+                  <tr>
+                    <td colSpan={5}>No customers found.</td>
                   </tr>
-                ))}
+                ) : (
+                  customers.map((customer) => (
+                    <tr key={customer.phone || customer.name}>
+                      <td>
+                        <strong>{customer.name}</strong>
+                      </td>
+
+                      <td>{customer.phone}</td>
+
+                      <td>
+                        <span className="customer-orders-count">
+                          {customer.orders}
+                        </span>
+                      </td>
+
+                      <td>
+                        <strong>{formatMoney(customer.total)}</strong>
+                      </td>
+
+                      <td>
+                        <a
+                          href={`tel:${customer.phone}`}
+                          className="call-button"
+                        >
+                          📞 Call
+                        </a>
+                      </td>
+                    </tr>
+                  ))
+                )}
               </tbody>
             </table>
           </div>
@@ -681,23 +675,12 @@ value={order.status || "Preparing"}														                            dis
                     </td>
 
                     <td>{order.customer_name}</td>
+                    <td>{order.payment_method || "—"}</td>
+                    <td>{formatMoney(order.subtotal)}</td>
+                    <td>{formatMoney(order.delivery_fee)}</td>
 
                     <td>
-                      {order.payment_method || "—"}
-                    </td>
-
-                    <td>
-                      {formatMoney(order.subtotal)}
-                    </td>
-
-                    <td>
-                      {formatMoney(order.delivery_fee)}
-                    </td>
-
-                    <td>
-                      <strong>
-                        {formatMoney(order.total)}
-                      </strong>
+                      <strong>{formatMoney(order.total)}</strong>
                     </td>
 
                     <td>
@@ -706,11 +689,17 @@ value={order.status || "Preparing"}														                            dis
                           order.status
                         )}`}
                       >
-                        {order.status || "Pending"}
+                        {order.status || "Preparing"}
                       </span>
                     </td>
                   </tr>
                 ))}
+
+                {orders.length === 0 && (
+                  <tr>
+                    <td colSpan={7}>No transactions found.</td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
@@ -746,11 +735,11 @@ value={order.status || "Preparing"}														                            dis
                   selectedOrder.status
                 )}`}
               >
-                {selectedOrder.status || "Pending"}
+                {selectedOrder.status || "Preparing"}
               </span>
 
               <select
-                value={selectedOrder.status || "Pending"}
+                value={selectedOrder.status || "Preparing"}
                 disabled={updating === selectedOrder.id}
                 onChange={(e) =>
                   updateOrderStatus(
@@ -828,27 +817,19 @@ value={order.status || "Preparing"}														                            dis
               <h3>Order Items</h3>
 
               {selectedItems.length === 0 ? (
-                <p className="muted">
-                  No order items found.
-                </p>
+                <p className="muted">No order items found.</p>
               ) : (
                 <div className="order-items">
                   {selectedItems.map((item) => (
-                    <div
-                      className="order-item"
-                      key={item.id}
-                    >
+                    <div className="order-item" key={item.id}>
                       <div>
                         <strong>{item.product_name}</strong>
                         <span>
-                          {item.quantity} ×{" "}
-                          {formatMoney(item.price)}
+                          {item.quantity} × {formatMoney(item.price)}
                         </span>
                       </div>
 
-                      <strong>
-                        {formatMoney(item.total)}
-                      </strong>
+                      <strong>{formatMoney(item.total)}</strong>
                     </div>
                   ))}
                 </div>
@@ -858,9 +839,7 @@ value={order.status || "Preparing"}														                            dis
             <div className="modal-totals">
               <div>
                 <span>Subtotal</span>
-                <strong>
-                  {formatMoney(selectedOrder.subtotal)}
-                </strong>
+                <strong>{formatMoney(selectedOrder.subtotal)}</strong>
               </div>
 
               <div>
@@ -872,16 +851,13 @@ value={order.status || "Preparing"}														                            dis
 
               <div className="grand-total">
                 <span>Total</span>
-                <strong>
-                  {formatMoney(selectedOrder.total)}
-                </strong>
+                <strong>{formatMoney(selectedOrder.total)}</strong>
               </div>
             </div>
 
             <div className="modal-footer">
               <span>
-                Ordered:{" "}
-                {formatDate(selectedOrder.created_at)}
+                Ordered: {formatDate(selectedOrder.created_at)}
               </span>
 
               <button
