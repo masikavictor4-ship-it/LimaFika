@@ -1,4 +1,3 @@
-
 "use client";
 
 import { FormEvent, useState } from "react";
@@ -150,8 +149,8 @@ export default function LoginPage() {
     try {
       const redirectTo =
         window.location.hostname === "localhost"
-          ? "http://localhost:3000/reset-password"
-          : "https://limafika.vercel.app/reset-password";
+          ? "http://localhost:3000/auth/confirm"
+          : "https://limafika.vercel.app/auth/confirm";
 
       console.log("[browser] Password reset redirect:", redirectTo);
 
@@ -170,7 +169,7 @@ export default function LoginPage() {
           errorMessage.includes("email rate limit")
         ) {
           setError(
-            "Password reset emails are temporarily rate-limited by Supabase. Please wait before requesting another reset email."
+            "Password reset emails are temporarily rate-limited. Please wait before requesting another email."
           );
         } else {
           setError(resetError.message);
@@ -179,7 +178,7 @@ export default function LoginPage() {
       }
 
       setMessage(
-        "Password reset email sent. Check your inbox and click the reset link."
+        "If an account exists for this email, a password reset email will be sent. Check your inbox and spam folder."
       );
     } catch (err) {
       console.error("[browser] Password reset exception:", err);
