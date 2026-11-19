@@ -1,3 +1,4 @@
+
 "use client";
 
 import { FormEvent, useEffect, useState } from "react";
@@ -8,41 +9,77 @@ export default function ResetPasswordPage() {
   const router = useRouter();
 
   const [password, setPassword] = useState("");
-  const [confirmPassword, setConfirmPassword] =
-    useState("");
-
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [loading, setLoading] = useState(false);
-  const [checkingSession, setCheckingSession] =
-    useState(true);
-
+  const [checkingSession, setCheckingSession] = useState(true);
+  const [sessionAvailable, setSessionAvailable] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
 
   useEffect(() => {
     let mounted = true;
 
+    // Listen for Supabase recovery session events.
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((event, session) => {
+      if (!mounted) return;
+
+      if (
+        event === "PASSWORD_RECOVERY" ||
+        (event === "INITIAL_SESSION" && session) ||
+        (event === "SIGNED_IN" && session) ||
+        (event === "TOKEN_REFRESHED" && session)
+      ) {
+        setSessionAvailable(true);
+        setError("");
+        setCheckingSession(false);
+      }
+    });
+
     async function checkSession() {
       try {
+        // Wait for Supabase to initialize and process the
+        // recovery callback from the email link.
         const {
           data: { session },
+          error: sessionError,
         } = await supabase.auth.getSession();
 
         if (!mounted) return;
 
-        if (!session) {
+        if (sessionError) {
+          throw sessionError;
+        }
+
+        if (session) {
+          setSessionAvailable(true);
+          setError("");
+        } else {
+          const params = new URLSearchParams(
+            window.location.search
+          );
+
+          const hash = new URLSearchParams(
+            window.location.hash.replace(/^#/, "")
+          );
+
+          const callbackError =
+            params.get("error_description") ||
+            hash.get("error_description");
+
           setError(
-            "This password reset link is invalid or has expired. Please request a new reset email."
+            callbackError
+              ? decodeURIComponent(callbackError.replace(/\+/g, " "))
+              : "Your password reset link is invalid or expired. Please request a new reset email."
           );
         }
       } catch (err) {
-        console.error(
-          "[browser] Reset session error:",
-          err
-        );
+        console.error("Recovery session error:", err);
 
         if (mounted) {
           setError(
-            "Unable to verify the password reset session."
+            "Unable to verify your recovery link. Please request a new one."
           );
         }
       } finally {
@@ -56,6 +93,7 @@ export default function ResetPasswordPage() {
 
     return () => {
       mounted = false;
+      subscription.unsubscribe();
     };
   }, []);
 
@@ -67,15 +105,15 @@ export default function ResetPasswordPage() {
     setError("");
     setMessage("");
 
-    if (!password || !confirmPassword) {
-      setError("Please enter and confirm your new password.");
+    if (!sessionAvailable) {
+      setError(
+        "Your recovery session is missing. Please request a new reset email."
+      );
       return;
     }
 
     if (password.length < 6) {
-      setError(
-        "Your new password must be at least 6 characters."
-      );
+      setError("Password must contain at least 6 characters.");
       return;
     }
 
@@ -89,12 +127,14 @@ export default function ResetPasswordPage() {
     try {
       const {
         data: { session },
+        error: sessionError,
       } = await supabase.auth.getSession();
 
-      if (!session) {
+      if (sessionError || !session) {
         setError(
-          "Your password reset session has expired. Please request a new reset email."
+          "Your reset session has expired. Please request another reset email."
         );
+        setSessionAvailable(false);
         return;
       }
 
@@ -104,32 +144,26 @@ export default function ResetPasswordPage() {
         });
 
       if (updateError) {
-        console.error(
-          "[browser] Password update error:",
-          updateError
-        );
-
+        console.error("Password update error:", updateError);
         setError(updateError.message);
         return;
       }
 
-      setMessage(
-        "Your password has been updated successfully. Redirecting to login..."
-      );
-
       setPassword("");
       setConfirmPassword("");
 
+      setMessage(
+        "Your LimaFika password has been updated successfully. Redirecting to login..."
+      );
+
+      // Password has already been updated successfully.
       await supabase.auth.signOut();
 
       setTimeout(() => {
         router.replace("/login");
-      }, 1500);
+      }, 2000);
     } catch (err) {
-      console.error(
-        "[browser] Password update exception:",
-        err
-      );
+      console.error("Password update exception:", err);
 
       setError(
         "Unable to update your password. Please request a new reset link."
@@ -145,7 +179,7 @@ export default function ResetPasswordPage() {
         <div className="login-card">
           <div className="login-header">
             <h1>LimaFika</h1>
-            <p>Checking password reset...</p>
+            <p>Verifying your password reset link...</p>
           </div>
         </div>
       </main>
@@ -157,7 +191,7 @@ export default function ResetPasswordPage() {
       <div className="login-card">
         <div className="login-header">
           <h1>LimaFika</h1>
-          <p>Create a new password</p>
+          <p>Reset your LimaFika password</p>
         </div>
 
         {error && (
@@ -172,7 +206,7 @@ export default function ResetPasswordPage() {
           </div>
         )}
 
-        {!message && (
+        {sessionAvailable && !message && (
           <form onSubmit={handleUpdatePassword}>
             <label htmlFor="new-password">
               New Password
@@ -185,8 +219,9 @@ export default function ResetPasswordPage() {
               onChange={(event) =>
                 setPassword(event.target.value)
               }
-              placeholder="Enter new password"
+              placeholder="Enter your new password"
               autoComplete="new-password"
+              minLength={6}
               disabled={loading}
               required
             />
@@ -202,8 +237,9 @@ export default function ResetPasswordPage() {
               onChange={(event) =>
                 setConfirmPassword(event.target.value)
               }
-              placeholder="Confirm new password"
+              placeholder="Confirm your new password"
               autoComplete="new-password"
+              minLength={6}
               disabled={loading}
               required
             />
@@ -218,6 +254,16 @@ export default function ResetPasswordPage() {
                 : "Update Password"}
             </button>
           </form>
+        )}
+
+        {!sessionAvailable && !message && (
+          <button
+            type="button"
+            className="auth-button"
+            onClick={() => router.push("/login")}
+          >
+            Return to Login
+          </button>
         )}
 
         <div className="login-footer">
